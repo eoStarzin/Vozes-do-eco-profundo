@@ -1,8 +1,7 @@
 // main.js
 // Jogo 2D inspirado em Hollow Knight: Exploração, terror atmosférico, lore ambiental e puzzles.
 // Usa Canvas 2D, roda offline, compatível PC/mobile.
-// Estrutura: Salas conectadas, movimento, colisões, espíritos, puzzle simples.
-// Controles: Teclado (setas/WASD + espaço) ou toque (esquerda/direita/pulo).
+// Atualizações: Sprites desenhados (pixel art simples), sons adicionais (pulo, dano), controles melhorados (botões virtuais mobile), menu personalizado (inicial com start).
 
 // Configurações globais
 const canvas = document.getElementById('gameCanvas');
@@ -20,7 +19,7 @@ window.addEventListener('resize', () => {
     canvas.height = height;
 });
 
-// Áudio: Web Audio API para som ambiente simples (ruído branco para terror)
+// Áudio: Web Audio API para sons
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 let noiseNode = null;
 function startAmbientSound() {
@@ -39,6 +38,34 @@ function startAmbientSound() {
     gainNode.connect(audioCtx.destination);
 }
 
+// Som de pulo: Tom alto curto
+function playJumpSound() {
+    const oscillator = audioCtx.createOscillator();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+    oscillator.connect(gain);
+    gain.connect(audioCtx.destination);
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.2);
+}
+
+// Som de dano: Tom baixo
+function playDamageSound() {
+    const oscillator = audioCtx.createOscillator();
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.setValueAtTime(220, audioCtx.currentTime);
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+    oscillator.connect(gain);
+    gain.connect(audioCtx.destination);
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.5);
+}
+
 // Jogador
 const player = {
     x: 100,
@@ -53,6 +80,29 @@ const player = {
     health: 3, // Máscaras de vida (3 iniciais)
     facingRight: true
 };
+
+// Função para desenhar sprite do jogador (pixel art simples: cavaleiro)
+function drawPlayerSprite(x, y, facingRight) {
+    ctx.fillStyle = '#00f'; // Corpo azul
+    ctx.fillRect(x + (facingRight ? 0 : 10), y, 10, 20); // Corpo
+    ctx.fillStyle = '#fff'; // Capacete branco
+    ctx.fillRect(x + (facingRight ? 5 : 5), y - 10, 10, 10); // Capacete
+    ctx.fillStyle = '#f00'; // Olho vermelho
+    ctx.fillRect(x + (facingRight ? 10 : 5), y - 5, 2, 2); // Olho
+}
+
+// Função para desenhar sprite de espírito (fantasma simples)
+function drawSpiritSprite(x, y, radius) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(x - 3, y - 2, 2, 0, Math.PI * 2); // Olho esquerdo
+    ctx.arc(x + 3, y - 2, 2, 0, Math.PI * 2); // Olho direito
+    ctx.fill();
+}
 
 // Salas: Array de objetos, cada sala tem plataformas, portas, espíritos, puzzles
 const rooms = [
@@ -124,26 +174,35 @@ let currentRoom = rooms[0];
 let fadeAlpha = 0; // Para transições fade
 let transitioning = false;
 let targetRoomId = 0;
+let gameState = 'menu'; // Estados: 'menu', 'playing'
+
+// Menu personalizado
+const menu = {
+    title: 'Jogo de Terror 2D',
+    options: ['Iniciar', 'Sair'],
+    selected: 0
+};
 
 // Controles
 const keys = {};
 window.addEventListener('keydown', (e) => { keys[e.key] = true; });
 window.addEventListener('keyup', (e) => { keys[e.key] = false; });
 
-// Controles toque para mobile
-let touchStartX = 0;
-let touchMoveX = 0;
-let isTouchJumping = false;
+// Controles toque para mobile: Botões virtuais
+let leftPressed = false;
+let rightPressed = false;
+let jumpPressed = false;
 canvas.addEventListener('touchstart', (e) => {
-    touchStartX = e.touches[0].clientX;
-    if (e.touches[0].clientY < height / 2) isTouchJumping = true; // Toque superior pula
+    for (let touch of e.touches) {
+        if (touch.clientX < width / 3) leftPressed = true;
+        else if (touch.clientX < 2 * width / 3) rightPressed = true;
+        else jumpPressed = true;
+    }
 });
-canvas.addEventListener('touchmove', (e) => {
-    touchMoveX = e.touches[0].clientX;
-});
-canvas.addEventListener('touchend', () => {
-    touchMoveX = touchStartX;
-    isTouchJumping = false;
+canvas.addEventListener('touchend', (e) => {
+    leftPressed = false;
+    rightPressed = false;
+    jumpPressed = false;
 });
 
 // Função de colisão
@@ -154,25 +213,42 @@ function checkCollision(rect1, rect2) {
            rect1.y + rect1.height > rect2.y;
 }
 
+// Atualiza menu
+function updateMenu() {
+    if (keys['ArrowUp'] || keys['w'] || keys['W']) menu.selected = (menu.selected - 1 + menu.options.length) % menu.options.length;
+    if (keys['ArrowDown'] || keys['s'] || keys['S']) menu.selected = (menu.selected + 1) % menu.options.length;
+    if (keys['Enter'] || keys[' '] || jumpPressed) {
+        if (menu.selected === 0) {
+            gameState = 'playing';
+            startAmbientSound();
+        } else if (menu.selected === 1) {
+            // Sair: Nada, ou recarregar
+            location.reload();
+        }
+        keys['Enter'] = false; keys[' '] = false; jumpPressed = false;
+    }
+}
+
 // Atualiza jogador
 function updatePlayer() {
     // Movimento horizontal
     let moving = false;
-    if (keys['ArrowLeft'] || keys['a'] || keys['A'] || (touchMoveX < touchStartX - 50)) {
+    if (keys['ArrowLeft'] || keys['a'] || keys['A'] || leftPressed) {
         player.x -= player.speed;
         player.facingRight = false;
         moving = true;
     }
-    if (keys['ArrowRight'] || keys['d'] || keys['D'] || (touchMoveX > touchStartX + 50)) {
+    if (keys['ArrowRight'] || keys['d'] || keys['D'] || rightPressed) {
         player.x += player.speed;
         player.facingRight = true;
         moving = true;
     }
 
     // Pulo
-    if ((keys['ArrowUp'] || keys['w'] || keys['W'] || keys[' '] || isTouchJumping) && !player.isJumping) {
+    if ((keys['ArrowUp'] || keys['w'] || keys['W'] || keys[' '] || jumpPressed) && !player.isJumping) {
         player.velocityY = -player.jumpSpeed;
         player.isJumping = true;
+        playJumpSound();
     }
 
     // Gravidade
@@ -209,6 +285,7 @@ function updatePlayer() {
     for (let spirit of currentRoom.spirits) {
         if (spirit.type === 'blocker' && spirit.visible && Math.hypot(player.x - spirit.x, player.y - spirit.y) < spirit.radius + 10) {
             player.health--;
+            playDamageSound();
             if (player.health <= 0) player.health = 0; // Game over simples (não implementado)
         }
     }
@@ -230,31 +307,48 @@ function updatePlayer() {
     }
 }
 
+// Desenha menu
+function drawMenu() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#fff';
+    ctx.font = '30px monospace';
+    ctx.fillText(menu.title, width / 2 - 100, height / 2 - 50);
+    ctx.font = '20px monospace';
+    for (let i = 0; i < menu.options.length; i++) {
+        ctx.fillStyle = i === menu.selected ? '#ff0' : '#fff';
+        ctx.fillText(menu.options[i], width / 2 - 50, height / 2 + i * 30);
+    }
+}
+
 // Desenha o jogo
-function draw() {
+function drawGame() {
     // Fundo
     ctx.fillStyle = currentRoom.backgroundColor;
     ctx.fillRect(0, 0, width, height);
 
-    // Plataformas (pixel art simples: retângulos cinza)
+    // Plataformas (pixel art simples: retângulos cinza com borda)
     ctx.fillStyle = '#555';
     for (let platform of currentRoom.platforms) {
         ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+        ctx.strokeStyle = '#333';
+        ctx.strokeRect(platform.x, platform.y, platform.width, platform.height);
     }
 
-    // Portas (retângulos vermelhos)
+    // Portas (retângulos vermelhos com detalhe)
     ctx.fillStyle = '#800';
     for (let door of currentRoom.doors) {
-        if (!door.blocked) ctx.fillRect(door.x, door.y, door.width, door.height);
+        if (!door.blocked) {
+            ctx.fillRect(door.x, door.y, door.width, door.height);
+            ctx.strokeStyle = '#f00';
+            ctx.strokeRect(door.x, door.y, door.width, door.height);
+        }
     }
 
-    // Espíritos (círculos brancos fantasmagóricos)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    // Espíritos
     for (let spirit of currentRoom.spirits) {
         if (spirit.visible) {
-            ctx.beginPath();
-            ctx.arc(spirit.x, spirit.y, spirit.radius, 0, Math.PI * 2);
-            ctx.fill();
+            drawSpiritSprite(spirit.x, spirit.y, spirit.radius);
         }
     }
 
@@ -265,13 +359,15 @@ function draw() {
         ctx.fillText(item.text, item.x, item.y);
     }
 
-    // Puzzles (símbolo revelado: círculo amarelo)
+    // Puzzles (símbolo revelado: círculo amarelo com detalhe)
     for (let puzzle of currentRoom.puzzles) {
         if (puzzle.revealed) {
             ctx.fillStyle = '#ff0';
             ctx.beginPath();
             ctx.arc(puzzle.x, puzzle.y, puzzle.radius, 0, Math.PI * 2);
             ctx.fill();
+            ctx.strokeStyle = '#f00';
+            ctx.stroke();
         }
     }
 
@@ -283,16 +379,17 @@ function draw() {
         ctx.fill();
     }
 
-    // Jogador (retângulo azul simples)
-    ctx.fillStyle = '#00f';
-    ctx.fillRect(player.x, player.y, player.width, player.height);
+    // Jogador
+    drawPlayerSprite(player.x, player.y, player.facingRight);
 
-    // Vida (máscaras: círculos vermelhos no topo)
-    ctx.fillStyle = '#f00';
+    // Vida (máscaras: círculos vermelhos no topo com borda)
     for (let i = 0; i < player.health; i++) {
+        ctx.fillStyle = '#f00';
         ctx.beginPath();
         ctx.arc(20 + i * 30, 20, 10, 0, Math.PI * 2);
         ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
     }
 
     // Fade transição
@@ -311,15 +408,32 @@ function draw() {
         ctx.fillStyle = `rgba(0, 0, 0, ${fadeAlpha})`;
         ctx.fillRect(0, 0, width, height);
     }
+
+    // Botões virtuais mobile
+    if (width < 800) { // Assumir mobile
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.fillRect(10, height - 60, 50, 50); // Esquerda
+        ctx.fillRect(70, height - 60, 50, 50); // Direita
+        ctx.fillRect(width - 60, height - 60, 50, 50); // Pulo
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px monospace';
+        ctx.fillText('<', 25, height - 30);
+        ctx.fillText('>', 85, height - 30);
+        ctx.fillText('^', width - 45, height - 30);
+    }
 }
 
 // Loop principal
 function gameLoop() {
-    updatePlayer();
-    draw();
+    if (gameState === 'menu') {
+        updateMenu();
+        drawMenu();
+    } else if (gameState === 'playing') {
+        updatePlayer();
+        drawGame();
+    }
     requestAnimationFrame(gameLoop);
 }
 
 // Inicia o jogo
-startAmbientSound();
 gameLoop();
